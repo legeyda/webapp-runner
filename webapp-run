@@ -7,7 +7,6 @@ set -u
 
 # ==== UTILITIES ====
 
-
 function usage() {
 	echo "Webapp Runner
 
@@ -24,10 +23,6 @@ Options:
   -n --no-run                 Do not run tomcat, just prepare CATALINA_BASE
 
 Environment variables:
-  IGNORE_CYGWIN               By default webapp-runner tries to detect 
-                              if it is executed in cygwin-environment 
-                              and if so, does some ajustments.
-                              If it is not what you want set this to false.
   ASSET_DIR                   Directory containing files additional to this script.
                               By default the directory where script is located.
   PATH_SEPARATOR              Path separator used to parse classpaths, colon (:) by default.
@@ -37,6 +32,8 @@ Environment variables:
   CATALINA_HOME               If set, use this directory, not create temporary in TEMP
   SHUTDOWN_PORT               That is to be configured in tomcat, 
                               by default random port in the range 10000-65000 is selected
+  REALPATH_COMMAND
+  STARTUP_COMMAND
 
 Configuration files
   webapp-runner loads configuration from /etc/webapp-runner-env then from ~/.webapp-runner-env
@@ -122,7 +119,9 @@ function mk-server-xml() {
 	cat "$ASSET_DIR/template/server.xml.in" | mustache "PORT=$1" "SHUTDOWN_PORT=$SHUTDOWN_PORT"
 }
 
-
+function escape-property() {
+	sed -e 's/\\/\\\\/g' <&0
+}
 
 
 
@@ -130,29 +129,31 @@ function mk-server-xml() {
 # ==== ENVIRONMENT ====
 
 # load env files
-set -a
-for ENV in /etc/webapp-runner-env ~/.webapp-runner-env; do
-	test -f "$ENV" && . "$ENV"
-done
-set +a
-
-
-# check required vars
-if [ -z "${CATALINA_HOME+x}" ]; then
-	echo 'CATALINA_HOME environment variable not set'
-	exit 1
+if [ true != "${IGNORE_CONFIG_FILES:-false}" ]; then
+	set -a
+	for ENV in /etc/webapp-runner-env ~/.webapp-runner-env; do
+		test -f "$ENV" && . "$ENV"
+	done
+	set +a
 fi
 
-
-# defaults
-test -z "${IGNORE_CYGWIN:-}"   && IGNORE_CYGWIN=false
-test -z "${DEBUG:-}"           && export DEBUG=false
-test -z "${ASSET_DIR:-}"       && ASSET_DIR=$(dirname "$0")
-test -z "${PATH_SEPARATOR:-}"  && PATH_SEPARATOR=':'
-test -z "${TEMP:-}"            && export TEMP="${TMP:-/tmp}"
-test -z "${CATALINA_BASE:-}"   && export CATALINA_BASE="$TEMP/webapp-runner/$(date +%Y-%m-%d_%H-%M-%S)"
-test -z "${SHUTDOWN_PORT:-}"   && export SHUTDOWN_PORT=$(shuf -i 10000-65000 -n 1)
-
+# defaults 
+test -z "${DEBUG:-}"            && export DEBUG=false
+test -z "${ASSET_DIR:-}"        && ASSET_DIR=$(dirname "$0")
+test -z "${PATH_SEPARATOR:-}"   && PATH_SEPARATOR=':'
+test -z "${TEMP:-}"             && export TEMP="${TMP:-/tmp}"
+test -z "${CATALINA_BASE:-}"    && export CATALINA_BASE="$TEMP/webapp-runner/$(date +%Y-%m-%d_%H-%M-%S)"
+test -z "${SHUTDOWN_PORT:-}"    && export SHUTDOWN_PORT=$(shuf -i 10000-65000 -n 1)
+if [ -z "${STARTUP_COMMAND:-}" ]; then 
+	# check required vars
+	if [ -z "${CATALINA_HOME+x}" ]; then
+		echo 'CATALINA_HOME should be set if STARTUP_COMMAND not set'
+		exit 1
+	fi
+	STARTUP_COMMAND="'$CATALINA_HOME/bin/startup.sh'"
+fi
+test -z "${REALPATH_COMMAND:-}" && export REALPATH_COMMAND=realpath
+debug "REALPATH_COMMAND is $REALPATH_COMMAND"
 
 # check vars
 if [ ! -d "$ASSET_DIR" ]; then
@@ -164,24 +165,7 @@ elif [ ! -d "$ASSET_DIR/template" ]; then
 fi
 
 
-# check cygwin
-if test ! true == "${IGNORE_CYGWIN:-false}" && uname -s | grep CYGWIN > /dev/null; then
-	echo 'cygwin detected (you can turn cygwin detection off by setting IGNORE_CYGWIN=true)'
-	function _normpath() {
-		local DATA=$(realpath "$1")
-		cygpath -wm "$DATA"
-	}
-	NORM_CATALINA_HOME=$(_normpath "$CATALINA_HOME")
-	test -z "${RUN_COMMAND:-}" && RUN_COMMAND="cmd.exe /C '$NORM_CATALINA_HOME/bin/startup.bat'"
-	CYGWIN=true
-else
-	alias _normpath=realpath
-	test -z "${RUN_COMMAND:-}" && RUN_COMMAND="'$CATALINA_HOME/bin/startup.sh'"
-	CYGWIN=false
-fi
-
-
-
+alias _realpath="$REALPATH_COMMAND"
 
 # ==== DEFAULT CLI ARGUMENTS ====
 WEBAPP=
@@ -241,22 +225,23 @@ while [ -n "${1+x}" ]; do
 			echo "not enough arguments for key $1 (two needed)"
 			exit 1
 		fi
-		DIR=$(_normpath "$2")
+		DIR=$(eval "$REALPATH_COMMAND '$2'")
 		debug "DIR is $DIR"
-		MAPPING=$(mk-mapping "$DIR" "$3" )
+		MAPPING=$(mk-mapping "$DIR" "$3")
 		debug "while loop: MAPPING is $MAPPING"
 		MAPPINGS="$MAPPINGS$MAPPING"
 		# todo warning if $1 not exists
 		shift 3
 	elif [ "$1" == -n -o "$1" == --no-run ]; then
-		RUN_COMMAND='echo webapp will no started'
+		STARTUP_COMMAND='echo webapp will no started'
 		shift 1
 	else
 		echo "wrong argument $1"
 		exit 1
 	fi
 done
-debug "CATALINA_CLASSPATH_LINES is $CATALINA_CLASSPATH_LINES ============================================="
+debug "CATALINA_CLASSPATH_LINES is $CATALINA_CLASSPATH_LINES 
+============================================="
 
 # parse classpath
 echo -n 'parsing classpath...'
@@ -279,7 +264,9 @@ while read CATALINA_CLASSPATH; do
 				SHARED_LOADER_PATH="$SHARED_LOADER_PATH, \\
 		"
 			fi
-			FILENAME=$(_normpath "$PART")
+			#debug "REALPATH_COMMAND is $REALPATH_COMMAND"
+			FILENAME=$(eval "$REALPATH_COMMAND '$PART'")
+			FILENAME=$(echo "$FILENAME" | escape-property)
 			SHARED_LOADER_PATH="$SHARED_LOADER_PATH\"$FILENAME\""
 		fi
 	done <<< "$CATALINA_CLASSPATH$LINE_SUFFIX"
@@ -328,7 +315,7 @@ mk-catalina-properties "$SHARED_LOADER_PATH" > "$CATALINA_BASE/conf/catalina.pro
 # context.xml
 mkdir -p "$CATALINA_BASE/conf/Catalina/localhost"
 backup "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
-NORM_WEBAPP=$(_normpath "$WEBAPP")
+NORM_WEBAPP=$(eval $REALPATH_COMMAND "$WEBAPP")
 mk-context-xml "$NORM_WEBAPP" "$CONTEXT" "$MAPPINGS" > "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
 
 mkdir -p "$CATALINA_BASE/logs" "$TEMP"
@@ -341,7 +328,8 @@ echo "folder $CATALINA_BASE is configured to be CATALINA_BASE"
 
 # ==== RUN TOMCAT ====
 echo "shutdown port is $SHUTDOWN_PORT"
-export CATALINA_HOME=$(_normpath $CATALINA_HOME)
-export CATALINA_BASE=$(_normpath $CATALINA_BASE)
+#export CATALINA_HOME=$(_realpath $CATALINA_HOME)
+#export CATALINA_BASE=$(_realpath $CATALINA_BASE)
 debug "final CATALINA_BASE is $CATALINA_BASE"
-eval "$RUN_COMMAND"
+debug "STARTUP_COMMAND is $STARTUP_COMMAND"
+eval "$STARTUP_COMMAND"
