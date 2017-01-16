@@ -1,0 +1,347 @@
+#!/bin/env bash
+
+#
+set -u
+
+
+
+# ==== UTILITIES ====
+
+
+function usage() {
+	echo "Webapp Runner
+
+Usage:
+  webapp-run (-w|--webapp) <webapp> [-p|--port <port>] [-C|--context <path>] [-c|-cp|--classpath <path>] [-m|--map <resource> <path>] [-n|--no-run]
+
+Options:
+  -h --help                   Show this screen.
+  -w --webapp <webapp>        WAR or expanded WAR
+  -p --port <port>            Port to listen
+  -C --context <path>         Webapp context path
+  -c -cp --classpath <path>   Add   
+  -m --map <resource> <path>  Map external resource on webapp path
+  -n --no-run                 Do not run tomcat, just prepare CATALINA_BASE
+
+Environment variables:
+  IGNORE_CYGWIN               By default webapp-runner tries to detect 
+                              if it is executed in cygwin-environment 
+                              and if so, does some ajustments.
+                              If it is not what you want set this to false.
+  ASSET_DIR                   Directory containing files additional to this script.
+                              By default the directory where script is located.
+  PATH_SEPARATOR              Path separator used to parse classpaths, colon (:) by default.
+  TEMP                        Base for temporary directory to create CATALINA_BASE
+                              (not used if CATALINA_BASE is set explicitly)
+  CATALINA_BASE               Tomcat 8 installation directory (required)
+  CATALINA_HOME               If set, use this directory, not create temporary in TEMP
+  SHUTDOWN_PORT               That is to be configured in tomcat, 
+                              by default random port in the range 10000-65000 is selected
+
+Configuration files
+  webapp-runner loads configuration from /etc/webapp-runner-env then from ~/.webapp-runner-env
+  usung bash sourcing."
+}
+
+if [ \( "$1" == -h -o "$1" == --help \) -a -z "${2:-}" ]; then
+	usage
+	exit 0
+fi
+
+
+function debug() {
+	test true == "$DEBUG" && echo "debug: webapp-runner: $@" >&2
+}
+
+
+function debug-eval() {
+	test true == "$DEBUG" && eval "$1"
+}
+
+
+## backup file (call before overwriting)
+## usage: backup <FILE>
+function backup() {
+	FILE=$1
+	if [ -f "$FILE" ]; then
+		cp "$FILE" "$FILE.backup-$(date +%Y-%m-%d_%H-%M-%S-%N)"
+	fi
+}
+
+
+## pass mustache-like template to stdin and get variables applied to it in stdout
+## usage: $0 VAR1=a VAR2=b VAR3
+function mustache() {
+
+	## add backslashes ot the end of lines
+	function sanitize() {
+		cat <&0 | sed -e 's|\\|\\\\|g; s#|#\\|#g; s|\&|\\&|g; ' | sed -e '$ ! s|^\(.*\)$|\1\\|g'
+	}
+
+	local SED_COMMAND=
+	while [ -n "${1+x}" ]; do
+		debug "mustache: arg is $1"
+		local  NAME=$(echo "$1" | cut -z -d= -f1)
+		# todo escape replacement string
+		local VALUE=$(echo "$1" | cut -z -d= -f2-)
+		if [ "$NAME" == "$VALUE" ]; then
+			VALUE=${!VALUE}
+		fi
+		VALUE=$(echo "$VALUE" | sanitize)
+		#VALUE=$(echo "$VALUE" | tr '\n' "---new--line---")
+		debug "mustache: NAME is $NAME, VALUE is $VALUE"
+		SED_COMMAND="${SED_COMMAND}s|{{$NAME}}|$VALUE|g; "
+		shift;
+	done
+	debug "SED_COMMAND is $SED_COMMAND"
+	sed -e "$SED_COMMAND" <&0
+}
+
+
+## usage: $0 "$SHARED_LOADER_PATH"
+function mk-catalina-properties() {
+	cat "$ASSET_DIR/template/catalina.properties.in" \
+			| mustache "SHARED_LOADER_PATH=$1"
+}
+
+## usage: $0 /path/to/webapp-root /context "$MAPPINGS"
+function mk-context-xml() {
+	cat "$ASSET_DIR/template/context.xml.in" | mustache "WEBAPP=$1" "CONTEXT=$2" "MAPPINGS=$3"
+}
+
+## usage: $0 /path/to/dir /path/to/mount/point
+#export MAPPING_TEMPLATE=$(cat "$HOME/tmpl/mapping.in")
+function mk-mapping() {
+	debug "mk-mapping: arg#1 is $1 arg#2 is $2"
+	cat "$ASSET_DIR/template/mapping.xml.in" | mustache "DIR=$1" "PATH=$2"
+}
+
+## $0 $PORT
+function mk-server-xml() {
+	debug "mk-server-xml: PORT is $PORT"
+	cat "$ASSET_DIR/template/server.xml.in" | mustache "PORT=$1" "SHUTDOWN_PORT=$SHUTDOWN_PORT"
+}
+
+
+
+
+
+
+# ==== ENVIRONMENT ====
+
+# load env files
+set -a
+for ENV in /etc/webapp-runner-env ~/.webapp-runner-env; do
+	test -f "$ENV" && . "$ENV"
+done
+set +a
+
+
+# check required vars
+if [ -z "${CATALINA_HOME+x}" ]; then
+	echo 'CATALINA_HOME environment variable not set'
+	exit 1
+fi
+
+
+# defaults
+test -z "${IGNORE_CYGWIN:-}"   && IGNORE_CYGWIN=false
+test -z "${DEBUG:-}"           && export DEBUG=false
+test -z "${ASSET_DIR:-}"       && ASSET_DIR=$(dirname "$0")
+test -z "${PATH_SEPARATOR:-}"  && PATH_SEPARATOR=':'
+test -z "${TEMP:-}"            && export TEMP="${TMP:-/tmp}"
+test -z "${CATALINA_BASE:-}"   && export CATALINA_BASE="$TEMP/webapp-runner/$(date +%Y-%m-%d_%H-%M-%S)"
+test -z "${SHUTDOWN_PORT:-}"   && export SHUTDOWN_PORT=$(shuf -i 10000-65000 -n 1)
+
+
+# check vars
+if [ ! -d "$ASSET_DIR" ]; then
+	echo "ASSET_DIR ($ASSET_DIR) not exists"
+	exit 1
+elif [ ! -d "$ASSET_DIR/template" ]; then
+	echo "webapp runner script has been possibly moved out of its dir and ASSET_DIR ($ASSET_DIR) is not set or set wrong"
+	exit 1
+fi
+
+
+# check cygwin
+if test ! true == "${IGNORE_CYGWIN:-false}" && uname -s | grep CYGWIN > /dev/null; then
+	echo 'cygwin detected (you can turn cygwin detection off by setting IGNORE_CYGWIN=true)'
+	function _normpath() {
+		local DATA=$(realpath "$1")
+		cygpath -wm "$DATA"
+	}
+	NORM_CATALINA_HOME=$(_normpath "$CATALINA_HOME")
+	test -z "${RUN_COMMAND:-}" && RUN_COMMAND="cmd.exe /C '$NORM_CATALINA_HOME/bin/startup.bat'"
+	CYGWIN=true
+else
+	alias _normpath=realpath
+	test -z "${RUN_COMMAND:-}" && RUN_COMMAND="'$CATALINA_HOME/bin/startup.sh'"
+	CYGWIN=false
+fi
+
+
+
+
+# ==== DEFAULT CLI ARGUMENTS ====
+WEBAPP=
+PORT=
+CONTEXT=
+CATALINA_CLASSPATH_LINES=
+MAPPINGS=
+
+
+
+
+# ==== PARSE COMMAND LINE ARGUMENTS ====
+NEWLINE=$'\n'
+while [ -n "${1+x}" ]; do
+	if   [ "$1" == -w -o "$1" == --webapp ]; then
+		if [ -n "$WEBAPP" ]; then
+			echo "duplicate parameter $1"
+			exit 1
+		fi
+		if [ -z ${2+x} ]; then
+			echo "no argument for param $1"
+			exit 1
+		fi
+		export WEBAPP="$2"
+		shift 2
+	elif   [ "$1" == -p -o "$1" == --port ]; then
+		if [ -n "$PORT" ]; then
+			echo "duplicate parameter $1"
+			exit 1
+		fi
+		if [ -z ${2+x} ]; then
+			echo "no argument for param $1"
+			exit 1
+		fi
+		export PORT="$2"
+		shift 2
+	elif [ "$1" == -C -o "$1" == --context ]; then
+		if [ -n "$CONTEXT" ]; then
+			echo "duplicate parameter $1"
+			exit 1
+		fi
+		if [ -z ${2+x} ]; then
+			echo "no argument for param $1"
+			exit 1
+		fi
+		export CONTEXT="$2"
+		shift 2
+	elif [ "$1" == -c -o "$1" == --classpath -o "$1" == --cp ]; then
+		if [ -z ${2+x} ]; then
+			echo "no argument for param $1"
+			exit 1
+		fi
+		CATALINA_CLASSPATH_LINES="$CATALINA_CLASSPATH_LINES$NEWLINE$2"
+		shift 2
+	elif [ "$1" == -m -o "$1" == --map ]; then
+		if [ -z "${2:-}" -o -z "${3:-}" ]; then
+			echo "not enough arguments for key $1 (two needed)"
+			exit 1
+		fi
+		DIR=$(_normpath "$2")
+		debug "DIR is $DIR"
+		MAPPING=$(mk-mapping "$DIR" "$3" )
+		debug "while loop: MAPPING is $MAPPING"
+		MAPPINGS="$MAPPINGS$MAPPING"
+		# todo warning if $1 not exists
+		shift 3
+	elif [ "$1" == -n -o "$1" == --no-run ]; then
+		RUN_COMMAND='echo webapp will no started'
+		shift 1
+	else
+		echo "wrong argument $1"
+		exit 1
+	fi
+done
+debug "CATALINA_CLASSPATH_LINES is $CATALINA_CLASSPATH_LINES ============================================="
+
+# parse classpath
+echo -n 'parsing classpath...'
+SHARED_LOADER_PATH=
+if [ -n "$PATH_SEPARATOR" ]; then 
+	READ_OPTS="-d '$PATH_SEPARATOR'"
+	LINE_SUFFIX="$PATH_SEPARATOR"
+else 
+	READ_OPTS=
+	LINE_SUFFIX=
+fi
+debug "READ_OPT is $READ_OPTS"
+debug "LINE_SUFFIX is $LINE_SUFFIX"
+while read CATALINA_CLASSPATH; do
+	#debug "CATALINA_CLASSPATH is $CATALINA_CLASSPATH"
+	while eval "read $READ_OPTS PART"; do
+		#debug "PART is $PART"
+		if [ -n "$PART" ]; then
+			if [ -n "$SHARED_LOADER_PATH" ]; then
+				SHARED_LOADER_PATH="$SHARED_LOADER_PATH, \\
+		"
+			fi
+			FILENAME=$(_normpath "$PART")
+			SHARED_LOADER_PATH="$SHARED_LOADER_PATH\"$FILENAME\""
+		fi
+	done <<< "$CATALINA_CLASSPATH$LINE_SUFFIX"
+done <<< "$CATALINA_CLASSPATH_LINES"
+echo ' done'
+
+
+
+debug HERE
+
+
+# ==== CHECK PARSED CLI ARGS ====
+
+if [ -z "$PORT" ]; then
+	PORT=8080
+fi
+
+if [ -z "$WEBAPP" ]; then
+	echo 'webapp not set'
+	exit 1
+fi
+
+# root context should be empty, not single slash
+if [ "$CONTEXT" == / ]; then
+	export CONTEXT=
+fi
+
+
+
+
+# ==== CONFIGURE CATALINA BASE ====
+
+# copy template catalina_base
+cp -rT "$ASSET_DIR/template/catalina-base" "$CATALINA_BASE"
+
+# server.xml
+mkdir -p "$CATALINA_BASE/conf"
+backup "$CATALINA_BASE/conf/server.xml"
+mk-server-xml "$PORT" > "$CATALINA_BASE/conf/server.xml"
+
+# catalina.properties
+mkdir -p "$CATALINA_BASE/conf"
+backup "$CATALINA_BASE/conf/catalina.properties"
+mk-catalina-properties "$SHARED_LOADER_PATH" > "$CATALINA_BASE/conf/catalina.properties"
+
+# context.xml
+mkdir -p "$CATALINA_BASE/conf/Catalina/localhost"
+backup "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
+NORM_WEBAPP=$(_normpath "$WEBAPP")
+mk-context-xml "$NORM_WEBAPP" "$CONTEXT" "$MAPPINGS" > "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
+
+mkdir -p "$CATALINA_BASE/logs" "$TEMP"
+
+echo "folder $CATALINA_BASE is configured to be CATALINA_BASE"
+
+
+
+
+
+# ==== RUN TOMCAT ====
+echo "shutdown port is $SHUTDOWN_PORT"
+export CATALINA_HOME=$(_normpath $CATALINA_HOME)
+export CATALINA_BASE=$(_normpath $CATALINA_BASE)
+debug "final CATALINA_BASE is $CATALINA_BASE"
+eval "$RUN_COMMAND"

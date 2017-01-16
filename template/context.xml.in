@@ -1,0 +1,5 @@
+<Context displayName="webapp" docBase="{{WEBAPP}}" path="{{CONTEXT}}" reloadable="true">
+	<Resources className="org.apache.catalina.webresources.StandardRoot">
+{{MAPPINGS}}
+	</Resources>
+</Context>
