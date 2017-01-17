@@ -20,7 +20,8 @@ Options:
   -C --context <path>         Webapp context path
   -c -cp --classpath <path>   Add   
   -m --map <resource> <path>  Map external resource on webapp path
-  -n --no-run                 Do not run tomcat, just prepare CATALINA_BASE
+  -k --config-only            do not run tomcat, only configure CATALINA_BASE
+  -r --run-only               do not configure CATALINA_BASE, just run tomcat from it
 
 Environment variables:
   ASSET_DIR                   Directory containing files additional to this script.
@@ -179,6 +180,7 @@ PORT=
 CONTEXT=
 CATALINA_CLASSPATH_LINES=
 MAPPINGS=
+MODE=
 
 
 
@@ -250,8 +252,19 @@ while [ -n "${1+x}" ]; do
 		MAPPINGS="$MAPPINGS$MAPPING"
 		# todo warning if $1 not exists
 		shift 3
-	elif [ "$1" == -n -o "$1" == --no-run ]; then
-		STARTUP_COMMAND='echo webapp will no started'
+	elif [ "$1" == -k -o "$1" == --config-only ]; then
+		if [ -n "$MODE" ]; then
+			echo "duplicate parameter $1"
+			exit 1
+		fi
+		MODE='CONFIG'
+		shift 1
+	elif [ "$1" == -r -o "$1" == --run-only ]; then
+		if [ -n "$MODE" ]; then
+			echo "duplicate parameter $1"
+			exit 1
+		fi
+		MODE='RUN'
 		shift 1
 	else
 		echo "wrong argument $1"
@@ -280,56 +293,60 @@ echo ' done'
 
 # ==== CHECK PARSED CLI ARGS ====
 
-if [ -z "$PORT" ]; then
-	PORT=8080
+if [ -z "$MODE" -o CONFIG == "$MODE" ]; then
+
+
+	if [ -z "$PORT" ]; then
+		PORT=8080
+	fi
+
+	if [ -z "$WEBAPP" ]; then
+		echo 'webapp not set'
+		exit 1
+	fi
+
+	# root context should be empty, not single slash
+	if [ "$CONTEXT" == / ]; then
+		export CONTEXT=
+	fi
+
+
+	# ==== CONFIGURE CATALINA BASE ====
+
+	# copy template catalina_base
+	cp -rT "$ASSET_DIR/template/catalina-base" "$CATALINA_BASE"
+
+	# server.xml
+	mkdir -p "$CATALINA_BASE/conf"
+	backup "$CATALINA_BASE/conf/server.xml"
+	mk-server-xml "$PORT" > "$CATALINA_BASE/conf/server.xml"
+
+	# catalina.properties
+	mkdir -p "$CATALINA_BASE/conf"
+	backup "$CATALINA_BASE/conf/catalina.properties"
+	mk-catalina-properties "$SHARED_LOADER_PATH" > "$CATALINA_BASE/conf/catalina.properties"
+
+	# context.xml
+	mkdir -p "$CATALINA_BASE/conf/Catalina/localhost"
+	backup "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
+	NORM_WEBAPP=$(eval $REALPATH_COMMAND "$WEBAPP")
+	mk-context-xml "$NORM_WEBAPP" "$CONTEXT" "$MAPPINGS" > "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
+
+	mkdir -p "$CATALINA_BASE/logs" "$TEMP"
+
+	echo "folder $CATALINA_BASE is configured to be CATALINA_BASE"
+
 fi
 
-if [ -z "$WEBAPP" ]; then
-	echo 'webapp not set'
-	exit 1
+
+if [ -z "$MODE" -o RUN == "$MODE" ]; then
+
+	# ==== RUN TOMCAT ====
+	echo "shutdown port is $SHUTDOWN_PORT"
+	#export CATALINA_HOME=$(_realpath $CATALINA_HOME)
+	#export CATALINA_BASE=$(_realpath $CATALINA_BASE)
+	debug "final CATALINA_BASE is $CATALINA_BASE"
+	debug "STARTUP_COMMAND is $STARTUP_COMMAND"
+	eval "$STARTUP_COMMAND"
+
 fi
-
-# root context should be empty, not single slash
-if [ "$CONTEXT" == / ]; then
-	export CONTEXT=
-fi
-
-
-
-
-# ==== CONFIGURE CATALINA BASE ====
-
-# copy template catalina_base
-cp -rT "$ASSET_DIR/template/catalina-base" "$CATALINA_BASE"
-
-# server.xml
-mkdir -p "$CATALINA_BASE/conf"
-backup "$CATALINA_BASE/conf/server.xml"
-mk-server-xml "$PORT" > "$CATALINA_BASE/conf/server.xml"
-
-# catalina.properties
-mkdir -p "$CATALINA_BASE/conf"
-backup "$CATALINA_BASE/conf/catalina.properties"
-mk-catalina-properties "$SHARED_LOADER_PATH" > "$CATALINA_BASE/conf/catalina.properties"
-
-# context.xml
-mkdir -p "$CATALINA_BASE/conf/Catalina/localhost"
-backup "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
-NORM_WEBAPP=$(eval $REALPATH_COMMAND "$WEBAPP")
-mk-context-xml "$NORM_WEBAPP" "$CONTEXT" "$MAPPINGS" > "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
-
-mkdir -p "$CATALINA_BASE/logs" "$TEMP"
-
-echo "folder $CATALINA_BASE is configured to be CATALINA_BASE"
-
-
-
-
-
-# ==== RUN TOMCAT ====
-echo "shutdown port is $SHUTDOWN_PORT"
-#export CATALINA_HOME=$(_realpath $CATALINA_HOME)
-#export CATALINA_BASE=$(_realpath $CATALINA_BASE)
-debug "final CATALINA_BASE is $CATALINA_BASE"
-debug "STARTUP_COMMAND is $STARTUP_COMMAND"
-eval "$STARTUP_COMMAND"
