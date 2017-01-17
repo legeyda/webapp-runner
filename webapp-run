@@ -32,12 +32,18 @@ Environment variables:
   CATALINA_HOME               If set, use this directory, not create temporary in TEMP
   SHUTDOWN_PORT               That is to be configured in tomcat, 
                               by default random port in the range 10000-65000 is selected
-  REALPATH_COMMAND
-  STARTUP_COMMAND
+  REALPATH_COMMAND            command to convert relative paths to absolute before writing to config files, 
+                              default realpath itself
+  STARTUP_COMMAND             command to start tomcat, default '${CATALINA_HOME}/bin/startup.sh'
 
 Configuration files
   webapp-runner loads configuration from /etc/webapp-runner-env then from ~/.webapp-runner-env
-  usung bash sourcing."
+  usung bash sourcing.
+
+Cygwin notes
+  When running on cygwin you may need to adjust some variables, for example:
+  export REALPATH_COMMAND='cygpath -aw'
+  export STARTUP_COMMAND='cmd.exe /C C:\\tomcat-8.5\\bin\\startup.bat'"
 }
 
 if [ \( "$1" == -h -o "$1" == --help \) -a -z "${2:-}" ]; then
@@ -179,6 +185,14 @@ MAPPINGS=
 
 # ==== PARSE COMMAND LINE ARGUMENTS ====
 NEWLINE=$'\n'
+if [ -n "$PATH_SEPARATOR" ]; then 
+	READ_OPTS="-d '$PATH_SEPARATOR'"
+	LINE_SUFFIX="$PATH_SEPARATOR"
+else 
+	READ_OPTS=
+	LINE_SUFFIX=
+fi
+debug 'iterating over arguments...'
 while [ -n "${1+x}" ]; do
 	if   [ "$1" == -w -o "$1" == --webapp ]; then
 		if [ -n "$WEBAPP" ]; then
@@ -218,7 +232,11 @@ while [ -n "${1+x}" ]; do
 			echo "no argument for param $1"
 			exit 1
 		fi
-		CATALINA_CLASSPATH_LINES="$CATALINA_CLASSPATH_LINES$NEWLINE$2"
+		while eval "read $READ_OPTS PART"; do
+			if [ -n "$PART" ]; then
+				CATALINA_CLASSPATH_LINES="$CATALINA_CLASSPATH_LINES$PART$NEWLINE"
+			fi
+		done <<< "$2$LINE_SUFFIX"
 		shift 2
 	elif [ "$1" == -m -o "$1" == --map ]; then
 		if [ -z "${2:-}" -o -z "${3:-}" ]; then
@@ -240,42 +258,24 @@ while [ -n "${1+x}" ]; do
 		exit 1
 	fi
 done
+debug 'done iterating over arguments'
+CATALINA_CLASSPATH_LINES=${CATALINA_CLASSPATH_LINES: : -1}
+#CATALINA_CLASSPATH_LINES=${CATALINA_CLASSPATH_LINES//\\/\\}
+CATALINA_CLASSPATH_LINES=$(echo "$CATALINA_CLASSPATH_LINES")
 debug "CATALINA_CLASSPATH_LINES is $CATALINA_CLASSPATH_LINES 
 ============================================="
+
 
 # parse classpath
 echo -n 'parsing classpath...'
 SHARED_LOADER_PATH=
-if [ -n "$PATH_SEPARATOR" ]; then 
-	READ_OPTS="-d '$PATH_SEPARATOR'"
-	LINE_SUFFIX="$PATH_SEPARATOR"
-else 
-	READ_OPTS=
-	LINE_SUFFIX=
-fi
-debug "READ_OPT is $READ_OPTS"
-debug "LINE_SUFFIX is $LINE_SUFFIX"
-while read CATALINA_CLASSPATH; do
-	#debug "CATALINA_CLASSPATH is $CATALINA_CLASSPATH"
-	while eval "read $READ_OPTS PART"; do
-		#debug "PART is $PART"
-		if [ -n "$PART" ]; then
-			if [ -n "$SHARED_LOADER_PATH" ]; then
-				SHARED_LOADER_PATH="$SHARED_LOADER_PATH, \\
+while read FILENAME; do
+	FILENAME=$($REALPATH_COMMAND "$FILENAME" | escape-property)
+	SHARED_LOADER_PATH="$SHARED_LOADER_PATH\"$FILENAME\", \\
 		"
-			fi
-			#debug "REALPATH_COMMAND is $REALPATH_COMMAND"
-			FILENAME=$(eval "$REALPATH_COMMAND '$PART'")
-			FILENAME=$(echo "$FILENAME" | escape-property)
-			SHARED_LOADER_PATH="$SHARED_LOADER_PATH\"$FILENAME\""
-		fi
-	done <<< "$CATALINA_CLASSPATH$LINE_SUFFIX"
 done <<< "$CATALINA_CLASSPATH_LINES"
+SHARED_LOADER_PATH=${SHARED_LOADER_PATH: : -5}
 echo ' done'
-
-
-
-debug HERE
 
 
 # ==== CHECK PARSED CLI ARGS ====
