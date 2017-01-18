@@ -137,11 +137,13 @@ function escape-property() {
 
 # load env files
 if [ true != "${IGNORE_CONFIG_FILES:-false}" ]; then
+	#OLDENV=$(set)
 	set -a
 	for ENV in /etc/webapp-runner-env ~/.webapp-runner-env; do
 		test -f "$ENV" && . "$ENV"
 	done
 	set +a
+	#eval "$OLDENV" 2> /dev/null
 fi
 
 # defaults 
@@ -279,21 +281,23 @@ debug "CATALINA_CLASSPATH_LINES is $CATALINA_CLASSPATH_LINES
 ============================================="
 
 
-# parse classpath
-echo -n 'parsing classpath...'
-SHARED_LOADER_PATH=
-while read FILENAME; do
-	FILENAME=$($REALPATH_COMMAND "$FILENAME" | escape-property)
-	SHARED_LOADER_PATH="$SHARED_LOADER_PATH\"$FILENAME\", \\
-		"
-done <<< "$CATALINA_CLASSPATH_LINES"
-SHARED_LOADER_PATH=${SHARED_LOADER_PATH: : -5}
-echo ' done'
-
-
-# ==== CHECK PARSED CLI ARGS ====
-
 if [ -z "$MODE" -o CONFIG == "$MODE" ]; then
+
+	# parse classpath
+	SHARED_LOADER_PATH=
+	if [ -n "$CATALINA_CLASSPATH_LINES" ]; then
+		echo -n 'parsing classpath...'
+		while read FILENAME; do
+			FILENAME=$($REALPATH_COMMAND "$FILENAME" | escape-property)
+			SHARED_LOADER_PATH="$SHARED_LOADER_PATH\"$FILENAME\", \\
+		"
+		done <<< "$CATALINA_CLASSPATH_LINES"
+		SHARED_LOADER_PATH=${SHARED_LOADER_PATH: : -5}
+		echo ' done'
+	fi
+
+
+	# ==== CHECK PARSED CLI ARGS ====
 
 
 	if [ -z "$PORT" ]; then
