@@ -11,18 +11,18 @@ function usage() {
 	echo "Webapp Runner
 
 Usage:
-  webapp-run (-h|--help)
+  webapp-run (-h|--help)  display help
+  webapp-run (-r|--restart)
   webapp-run (-w|--webapp) <webapp> [-p|--port <port>] [-C|--context <path>] [-c|-cp|--classpath <path>] [-m|--map <resource> <path>] [-n|--no-run]
 
 Options:
   -h --help                   Show this screen.
-  -w --webapp <webapp>        WAR or expanded WAR
+  -r --restart                Do not configure anything, just repeat last start
+  -w --webapp <webapp>        WAR or expanded WAR to serve
   -p --port <port>            Port to listen
-  -C --context <path>         Webapp context path
-  -c -cp --classpath <path>   Add   
+  -C --context <path>         Webapp context path, default /
+  -c -cp --classpath <path>   Add classpath entry
   -m --map <resource> <path>  Map external resource on webapp path
-  -k --config-only            do not run tomcat, only configure CATALINA_BASE
-  -r --run-only               do not configure CATALINA_BASE, just run tomcat from it
 
 Environment variables:
   ASSET_DIR                   Directory containing files additional to this script.
@@ -39,8 +39,9 @@ Environment variables:
   STARTUP_COMMAND             command to start tomcat, default '\${CATALINA_HOME}/bin/startup.sh'
 
 Configuration files
-  webapp-runner loads configuration from /etc/webapp-runner-env then from ~/.webapp-runner-env
+  webapp-runner loads configuration from /etc/webapp-runner-env then from ~/.config/webapp-runner/webapp-runner-env
   usung bash sourcing.
+  last configuration is stored in ~/.local/share/webapp-runner
 
 Cygwin notes
   When running on cygwin you may need to adjust some variables, for example:
@@ -59,6 +60,17 @@ if [ \( "$1" == -h -o "$1" == --help \) -a -z "${2:-}" ]; then
 	exit 0
 fi
 
+if [ \( "$1" == -r -o "$1" == --restart \) -a -z "${2:-}" ]; then
+	if [ ! -f ~/.local/share/webapp-runner/last-environment -o ! ~/.local/share/webapp-runner/last-startup-command ]; then
+		echo 'last configuration not found'
+		exit 1
+	fi
+	set -a
+	. ~/.local/share/webapp-runner/last-environment
+	set +a
+	eval $(cat ~/.local/share/webapp-runner/last-startup-command)
+	exit 0
+fi
 
 function debug() {
 	test true == "$DEBUG" && echo "debug: webapp-runner: $@" >&2
@@ -146,7 +158,7 @@ function escape-property() {
 if [ true != "${IGNORE_CONFIG_FILES:-false}" ]; then
 	#OLDENV=$(set)
 	set -a
-	for ENV in /etc/webapp-runner-env ~/.webapp-runner-env; do
+	for ENV in /etc/webapp-runner-env ~/.config/webapp-runner/webapp-runner-env; do
 		test -f "$ENV" && . "$ENV"
 	done
 	set +a
@@ -189,7 +201,6 @@ PORT=
 CONTEXT=
 CATALINA_CLASSPATH_LINES=
 MAPPINGS=
-MODE=
 
 
 
@@ -261,20 +272,6 @@ while [ -n "${1+x}" ]; do
 		MAPPINGS="$MAPPINGS$MAPPING"
 		# todo warning if $1 not exists
 		shift 3
-	elif [ "$1" == -k -o "$1" == --config-only ]; then
-		if [ -n "$MODE" ]; then
-			echo "duplicate parameter $1"
-			exit 1
-		fi
-		MODE='CONFIG'
-		shift 1
-	elif [ "$1" == -r -o "$1" == --run-only ]; then
-		if [ -n "$MODE" ]; then
-			echo "duplicate parameter $1"
-			exit 1
-		fi
-		MODE='RUN'
-		shift 1
 	else
 		echo "wrong argument $1"
 		exit 1
@@ -288,78 +285,80 @@ debug "CATALINA_CLASSPATH_LINES is $CATALINA_CLASSPATH_LINES
 ============================================="
 
 
-if [ -z "$MODE" -o CONFIG == "$MODE" ]; then
 
-	# parse classpath
-	SHARED_LOADER_PATH=
-	
-	if [ -n "$CATALINA_CLASSPATH_LINES" ]; then
-		echo -n 'parsing classpath...'
-		CATALINA_CLASSPATH_LINES=$(echo "$CATALINA_CLASSPATH_LINES") # работает 0.01 с.
-		#date +%M:%S.%N
-		while read FILENAME; do # 0.017 c. просто итерация
-			FILENAME=$($REALPATH_COMMAND "$FILENAME" | escape-property) # полный цикл с этой штукой 16 секунд
-		 	SHARED_LOADER_PATH="$SHARED_LOADER_PATH\"$FILENAME\", \\
-		 " # с этой штукой плюс ещё секунда
-		done <<< "$CATALINA_CLASSPATH_LINES"
-		#date +%M:%S.%N
-		SHARED_LOADER_PATH=${SHARED_LOADER_PATH: : -5}
-		echo ' done'
-	fi
+# parse classpath
+SHARED_LOADER_PATH=
 
-	# ==== CHECK PARSED CLI ARGS ====
-
-
-	if [ -z "$PORT" ]; then
-		PORT=8080
-	fi
-
-	if [ -z "$WEBAPP" ]; then
-		echo 'webapp not set'
-		exit 1
-	fi
-
-	# root context should be empty, not single slash
-	if [ "$CONTEXT" == / ]; then
-		export CONTEXT=
-	fi
-
-
-	# ==== CONFIGURE CATALINA BASE ====
-
-	# copy template catalina_base
-	cp -rT "$ASSET_DIR/template/catalina-base" "$CATALINA_BASE"
-
-	# server.xml
-	mkdir -p "$CATALINA_BASE/conf"
-	backup "$CATALINA_BASE/conf/server.xml"
-	mk-server-xml "$PORT" > "$CATALINA_BASE/conf/server.xml"
-
-	# catalina.properties
-	mkdir -p "$CATALINA_BASE/conf"
-	backup "$CATALINA_BASE/conf/catalina.properties"
-	mk-catalina-properties "$SHARED_LOADER_PATH" > "$CATALINA_BASE/conf/catalina.properties"
-
-	# context.xml
-	mkdir -p "$CATALINA_BASE/conf/Catalina/localhost"
-	backup "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
-	NORM_WEBAPP=$(eval $REALPATH_COMMAND "$WEBAPP")
-	mk-context-xml "$NORM_WEBAPP" "$CONTEXT" "$MAPPINGS" > "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
-
-	mkdir -p "$CATALINA_BASE/logs" "$TEMP"
-
-	echo "folder $CATALINA_BASE is configured to be CATALINA_BASE"
-
+if [ -n "$CATALINA_CLASSPATH_LINES" ]; then
+	echo -n 'parsing classpath...'
+	CATALINA_CLASSPATH_LINES=$(echo "$CATALINA_CLASSPATH_LINES") # работает 0.01 с.
+	#date +%M:%S.%N
+	while read FILENAME; do # 0.017 c. просто итерация
+		FILENAME=$($REALPATH_COMMAND "$FILENAME" | escape-property) # полный цикл с этой штукой 16 секунд
+	 	SHARED_LOADER_PATH="$SHARED_LOADER_PATH\"$FILENAME\", \\
+		" # с этой штукой плюс ещё секунда
+	done <<< "$CATALINA_CLASSPATH_LINES"
+	#date +%M:%S.%N
+	SHARED_LOADER_PATH=${SHARED_LOADER_PATH: : -5}
+	echo ' done'
 fi
 
-if [ -z "$MODE" -o RUN == "$MODE" ]; then
+# ==== CHECK PARSED CLI ARGS ====
 
-	# ==== RUN TOMCAT ====
-	echo "shutdown port is $SHUTDOWN_PORT"
-	#export CATALINA_HOME=$(_realpath $CATALINA_HOME)
-	#export CATALINA_BASE=$(_realpath $CATALINA_BASE)
-	debug "final CATALINA_BASE is $CATALINA_BASE"
-	debug "STARTUP_COMMAND is $STARTUP_COMMAND"
-	eval "$STARTUP_COMMAND"
 
+if [ -z "$PORT" ]; then
+	PORT=8080
 fi
+
+if [ -z "$WEBAPP" ]; then
+	echo 'webapp not set'
+	exit 1
+fi
+
+# root context should be empty, not single slash
+if [ "$CONTEXT" == / ]; then
+	export CONTEXT=
+fi
+
+
+# ==== CONFIGURE CATALINA BASE ====
+
+# copy template catalina_base
+cp -rT "$ASSET_DIR/template/catalina-base" "$CATALINA_BASE"
+
+# server.xml
+mkdir -p "$CATALINA_BASE/conf"
+backup "$CATALINA_BASE/conf/server.xml"
+mk-server-xml "$PORT" > "$CATALINA_BASE/conf/server.xml"
+
+# catalina.properties
+mkdir -p "$CATALINA_BASE/conf"
+backup "$CATALINA_BASE/conf/catalina.properties"
+mk-catalina-properties "$SHARED_LOADER_PATH" > "$CATALINA_BASE/conf/catalina.properties"
+
+# context.xml
+mkdir -p "$CATALINA_BASE/conf/Catalina/localhost"
+backup "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
+NORM_WEBAPP=$(eval $REALPATH_COMMAND "$WEBAPP")
+mk-context-xml "$NORM_WEBAPP" "$CONTEXT" "$MAPPINGS" > "$CATALINA_BASE/conf/Catalina/localhost/ROOT.xml"
+
+mkdir -p "$CATALINA_BASE/logs" "$TEMP"
+
+echo "folder $CATALINA_BASE is configured to be CATALINA_BASE"
+
+
+
+# save last configuration
+mkdir -p ~/.local/share/webapp-runner
+set > ~/.local/share/webapp-runner/last-environment
+echo "$STARTUP_COMMAND" > ~/.local/share/webapp-runner/last-startup-command
+
+
+
+# ==== RUN TOMCAT ====
+echo "shutdown port is $SHUTDOWN_PORT"
+#export CATALINA_HOME=$(_realpath $CATALINA_HOME)
+#export CATALINA_BASE=$(_realpath $CATALINA_BASE)
+debug "final CATALINA_BASE is $CATALINA_BASE"
+debug "STARTUP_COMMAND is $STARTUP_COMMAND"
+eval "$STARTUP_COMMAND"

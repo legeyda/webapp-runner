@@ -16,18 +16,18 @@ in `conf/Catalina/localhost/ROOT.xml`.
 	Webapp Runner
 
 	Usage:
-	  webapp-run (-h|--help)
+	  webapp-run (-h|--help)  display help
+	  webapp-run (-r|--restart)
 	  webapp-run (-w|--webapp) <webapp> [-p|--port <port>] [-C|--context <path>] [-c|-cp|--classpath <path>] [-m|--map <resource> <path>] [-n|--no-run]
 
 	Options:
 	  -h --help                   Show this screen.
-	  -w --webapp <webapp>        WAR or expanded WAR
+	  -r --restart                Do not configure anything, just repeat last start
+	  -w --webapp <webapp>        WAR or expanded WAR to serve
 	  -p --port <port>            Port to listen
-	  -C --context <path>         Webapp context path
-	  -c -cp --classpath <path>   Add   
+	  -C --context <path>         Webapp context path, default /
+	  -c -cp --classpath <path>   Add classpath entry
 	  -m --map <resource> <path>  Map external resource on webapp path
-	  -k --config-only            do not run tomcat, only configure CATALINA_BASE
-	  -r --run-only               do not configure CATALINA_BASE, just run tomcat from it
 
 	Environment variables:
 	  ASSET_DIR                   Directory containing files additional to this script.
@@ -41,11 +41,12 @@ in `conf/Catalina/localhost/ROOT.xml`.
 	                              by default random port in the range 10000-65000 is selected
 	  REALPATH_COMMAND            command to convert relative paths to absolute before writing to config files, 
 	                              default realpath itself
-	  STARTUP_COMMAND             command to start tomcat, default "${CATALINA_HOME}/bin/startup.sh"
+	  STARTUP_COMMAND             command to start tomcat, default ${CATALINA_HOME}/bin/startup.sh
 
 	Configuration files
-	  webapp-runner loads configuration from /etc/webapp-runner-env then from ~/.webapp-runner-env
+	  webapp-runner loads configuration from /etc/webapp-runner-env then from ~/.config/webapp-runner/webapp-runner-env
 	  usung bash sourcing.
+	  last configuration is stored in ~/.local/share/webapp-runner
 
 	Cygwin notes
 	  When running on cygwin you may need to adjust some variables, for example:
