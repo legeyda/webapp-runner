@@ -25,7 +25,7 @@ Options:
   -m --map <resource> <path>  Map external resource on webapp path
 
 Environment variables:
-  ASSET_DIR                   Directory containing files additional to this script.
+  WEBAPP_RUNNER_ASSET_DIR     Directory containing files needed by this script.
                               By default the directory where script is located.
   PATH_SEPARATOR              Path separator used to parse classpaths, colon (:) by default.
   TEMP                        Base for temporary directory to create CATALINA_BASE
@@ -68,6 +68,8 @@ if [ \( "$1" == -r -o "$1" == --restart \) -a -z "${2:-}" ]; then
 	set -a
 	. ~/.local/share/webapp-runner/last-environment
 	set +a
+	echo "reusing saved configuration"
+	echo "webapp path is $WEBAPP"
 	eval $(cat ~/.local/share/webapp-runner/last-startup-command)
 	exit 0
 fi
@@ -123,26 +125,26 @@ function mustache() {
 
 ## usage: $0 "$SHARED_LOADER_PATH"
 function mk-catalina-properties() {
-	cat "$ASSET_DIR/template/catalina.properties.in" \
+	cat "$WEBAPP_RUNNER_ASSET_DIR/template/catalina.properties.in" \
 			| mustache "SHARED_LOADER_PATH=$1"
 }
 
 ## usage: $0 /path/to/webapp-root /context "$MAPPINGS"
 function mk-context-xml() {
-	cat "$ASSET_DIR/template/context.xml.in" | mustache "WEBAPP=$1" "CONTEXT=$2" "MAPPINGS=$3"
+	cat "$WEBAPP_RUNNER_ASSET_DIR/template/context.xml.in" | mustache "WEBAPP=$1" "CONTEXT=$2" "MAPPINGS=$3"
 }
 
 ## usage: $0 /path/to/dir /path/to/mount/point
 #export MAPPING_TEMPLATE=$(cat "$HOME/tmpl/mapping.in")
 function mk-mapping() {
 	debug "mk-mapping: arg#1 is $1 arg#2 is $2"
-	cat "$ASSET_DIR/template/mapping.xml.in" | mustache "DIR=$1" "PATH=$2"
+	cat "$WEBAPP_RUNNER_ASSET_DIR/template/mapping.xml.in" | mustache "DIR=$1" "PATH=$2"
 }
 
 ## $0 $PORT
 function mk-server-xml() {
 	debug "mk-server-xml: PORT is $PORT"
-	cat "$ASSET_DIR/template/server.xml.in" | mustache "PORT=$1" "SHUTDOWN_PORT=$SHUTDOWN_PORT"
+	cat "$WEBAPP_RUNNER_ASSET_DIR/template/server.xml.in" | mustache "PORT=$1" "SHUTDOWN_PORT=$SHUTDOWN_PORT"
 }
 
 function escape-property() {
@@ -165,9 +167,12 @@ if [ true != "${IGNORE_CONFIG_FILES:-false}" ]; then
 	#eval "$OLDENV" 2> /dev/null
 fi
 
+
+
+
 # defaults 
 test -z "${DEBUG:-}"            && export DEBUG=false
-test -z "${ASSET_DIR:-}"        && ASSET_DIR=$(dirname "$0")
+test -z "${WEBAPP_RUNNER_ASSET_DIR:-}"        && WEBAPP_RUNNER_ASSET_DIR=$(dirname "$0")
 test -z "${PATH_SEPARATOR:-}"   && PATH_SEPARATOR=':'
 test -z "${TEMP:-}"             && export TEMP="${TMP:-/tmp}"
 test -z "${CATALINA_BASE:-}"    && export CATALINA_BASE="$TEMP/webapp-runner/$(date +%Y-%m-%d_%H-%M-%S)"
@@ -184,11 +189,11 @@ test -z "${REALPATH_COMMAND:-}" && export REALPATH_COMMAND=realpath
 debug "REALPATH_COMMAND is $REALPATH_COMMAND"
 
 # check vars
-if [ ! -d "$ASSET_DIR" ]; then
-	echo "ASSET_DIR ($ASSET_DIR) not exists"
+if [ ! -d "$WEBAPP_RUNNER_ASSET_DIR" ]; then
+	echo "WEBAPP_RUNNER_ASSET_DIR ($WEBAPP_RUNNER_ASSET_DIR) not exists"
 	exit 1
-elif [ ! -d "$ASSET_DIR/template" ]; then
-	echo "webapp runner script has been possibly moved out of its dir and ASSET_DIR ($ASSET_DIR) is not set or set wrong"
+elif [ ! -d "$WEBAPP_RUNNER_ASSET_DIR/template" ]; then
+	echo "webapp runner script has been possibly moved out of its dir and WEBAPP_RUNNER_ASSET_DIR ($WEBAPP_RUNNER_ASSET_DIR) is not set or set wrong"
 	exit 1
 fi
 
@@ -216,7 +221,9 @@ else
 fi
 debug 'iterating over arguments...'
 while [ -n "${1+x}" ]; do
-	if   [ "$1" == -w -o "$1" == --webapp ]; then
+	if   [ -z "${1:+x}" ]; then
+		break; 
+	elif [ "$1" == -w -o "$1" == --webapp ]; then
 		if [ -n "$WEBAPP" ]; then
 			echo "duplicate parameter $1"
 			exit 1
@@ -324,7 +331,7 @@ fi
 # ==== CONFIGURE CATALINA BASE ====
 
 # copy template catalina_base
-cp -rT "$ASSET_DIR/template/catalina-base" "$CATALINA_BASE"
+cp -rT "$WEBAPP_RUNNER_ASSET_DIR/template/catalina-base" "$CATALINA_BASE"
 
 # server.xml
 mkdir -p "$CATALINA_BASE/conf"
