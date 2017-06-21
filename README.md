@@ -16,7 +16,7 @@ in `conf/Catalina/localhost/ROOT.xml`.
 	Webapp Runner
 
 	Usage:
-	  webapp-run (-h|--help)  display help
+	  webapp-run (-h|--help)
 	  webapp-run (-r|--restart)
 	  webapp-run (-w|--webapp) <webapp> [-p|--port <port>] [-C|--context <path>] [-c|-cp|--classpath <path>] [-m|--map <resource> <path>] [-n|--no-run]
 
@@ -30,7 +30,7 @@ in `conf/Catalina/localhost/ROOT.xml`.
 	  -m --map <resource> <path>  Map external resource on webapp path
 
 	Environment variables:
-	  ASSET_DIR                   Directory containing files additional to this script.
+	  WEBAPP_RUNNER_ASSET_DIR     Directory containing files additional to this script.
 	                              By default the directory where script is located.
 	  PATH_SEPARATOR              Path separator used to parse classpaths, colon (:) by default.
 	  TEMP                        Base for temporary directory to create CATALINA_BASE
